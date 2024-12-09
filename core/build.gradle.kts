@@ -13,7 +13,7 @@ plugins {
     alias(libs.plugins.mokkery)
 }
 
-val sqliteVersion = "3450000"
+val sqliteVersion = "3450200"
 val sqliteReleaseYear = "2024"
 
 val sqliteSrcFolder =
@@ -69,18 +69,21 @@ kotlin {
     androidTarget {
         publishLibraryVariants("release", "debug")
     }
+    jvm()
 
     iosX64()
     iosArm64()
     iosSimulatorArm64()
 
     targets.withType<KotlinNativeTarget> {
-        compilations.getByName("main") {
-            compilerOptions.options.freeCompilerArgs.add("-Xexport-kdoc")
+        compilations.named("main") {
+            compileTaskProvider {
+                compilerOptions.freeCompilerArgs.add("-Xexport-kdoc")
+            }
             cinterops.create("sqlite") {
                 val cInteropTask = tasks[interopProcessingTaskName]
                 cInteropTask.dependsOn(buildCInteropDef)
-                defFile =
+                definitionFile =
                     buildCInteropDef
                         .get()
                         .outputs.files.singleFile
@@ -116,6 +119,11 @@ kotlin {
 
         androidMain.dependencies {
             implementation(libs.ktor.client.okhttp)
+        }
+
+        jvmMain.dependencies {
+            implementation(libs.ktor.client.okhttp)
+            implementation(libs.sqlite.jdbc)
         }
 
         iosMain.dependencies {
@@ -159,6 +167,7 @@ android {
                 .get()
                 .toInt()
 
+        @Suppress("UnstableApiUsage")
         externalNativeBuild {
             cmake {
                 arguments.addAll(
@@ -175,6 +184,60 @@ android {
             path = project.file("src/androidMain/cpp/CMakeLists.txt")
         }
     }
+}
+
+val cmakeJvmConfigure = tasks.register<Exec>("cmakeJvmConfigure") {
+    dependsOn(unzipSQLiteSources)
+    workingDir = layout.buildDirectory.dir("cmake").get().asFile
+    inputs.files(
+        "src/jvmMain/cpp",
+        "src/jvmNative/cpp",
+        sqliteSrcFolder,
+    )
+    outputs.dir(workingDir)
+    executable = "cmake"
+    args(file("src/jvmMain/cpp/CMakeLists.txt").absolutePath)
+    doFirst {
+        workingDir.mkdirs()
+    }
+}
+
+val cmakeJvmBuild = tasks.register<Exec>("cmakeJvmBuild") {
+    dependsOn(cmakeJvmConfigure)
+    workingDir = layout.buildDirectory.dir("cmake").get().asFile
+    inputs.files(
+        "src/jvmMain/cpp",
+        "src/jvmNative/cpp",
+        sqliteSrcFolder,
+        workingDir,
+    )
+    outputs.dir(workingDir.resolve("output"))
+    executable = "cmake"
+    args("--build", ".")
+}
+
+val binariesFolder =
+    project.layout.buildDirectory
+        .dir("binaries/desktop")
+        .get()
+
+val downloadDesktopBinaries = tasks.register<Download>("downloadDesktopBinaries") {
+    val coreVersion = libs.versions.powersync.core.get()
+    src(listOf(
+        "https://github.com/powersync-ja/powersync-sqlite-core/releases/download/v$coreVersion/libpowersync_aarch64.so",
+        "https://github.com/powersync-ja/powersync-sqlite-core/releases/download/v$coreVersion/libpowersync_x64.so",
+        "https://github.com/powersync-ja/powersync-sqlite-core/releases/download/v$coreVersion/libpowersync_aarch64.dylib",
+        "https://github.com/powersync-ja/powersync-sqlite-core/releases/download/v$coreVersion/libpowersync_x64.dylib",
+        "https://github.com/powersync-ja/powersync-sqlite-core/releases/download/v$coreVersion/powersync_x64.dll",
+    ))
+    dest(binariesFolder)
+    onlyIfModified(true)
+}
+
+tasks.named<ProcessResources>(kotlin.jvm().compilations["main"].processResourcesTaskName) {
+    dependsOn(cmakeJvmBuild, downloadDesktopBinaries)
+    from(layout.buildDirectory.dir("cmake/output"))
+    from(binariesFolder)
 }
 
 afterEvaluate {
